@@ -186,7 +186,7 @@ pub fn core_error_code(err: &CoreError) -> i32 {
         CoreError::RootDirectoryExists => ERR_ROOT_DIRECTORY_EXISTS,
         CoreError::RandomDataGenerationFailure => ERR_RANDOM_DATA_GENERATION_FAILURE,
         CoreError::OperationForbidden => ERR_OPERATION_FORBIDDEN,
-        CoreError::DataError(ref err) => match *err {
+        CoreError::DataError(ref err) => match *err { //TODO: shouldn't this be safe_nd_error_code(err)
             SndError::AccessDenied => ERR_ACCESS_DENIED,
             SndError::NoSuchLoginPacket => ERR_NO_SUCH_LOGIN_PACKET,
             SndError::LoginPacketExists => ERR_LOGIN_PACKET_EXISTS,
@@ -203,7 +203,7 @@ pub fn core_error_code(err: &CoreError) -> i32 {
             SndError::InvalidOperation => ERR_INVALID_OPERATION,
             SndError::NetworkOther(_) => ERR_NETWORK_OTHER,
             SndError::InvalidOwnersSuccessor(_) => ERR_INVALID_OWNERS_SUCCESSOR,
-            SndError::InvalidPermissionsSuccessor(_) => ERR_INVALID_PERMISSIONS_SUCCESSOR,
+            SndError::OpNotCausallyReady => ERR_OP_NOT_CAUSALLY_READY,
             SndError::SigningKeyTypeMismatch => ERR_SIGN_KEYTYPE_MISMATCH,
             SndError::InvalidSignature => ERR_INVALID_SIGNATURE,
             SndError::LossOfPrecision => ERR_LOSS_OF_PRECISION,
@@ -214,6 +214,7 @@ pub fn core_error_code(err: &CoreError) -> i32 {
             SndError::TransactionIdExists => ERR_TRANSACTION_ID_EXISTS,
             SndError::InsufficientBalance => ERR_INSUFFICIENT_BALANCE,
             SndError::ExceededSize => ERR_EXCEEDED_SIZE,
+            SndError::Unexpected(_) => ERR_UNEXPECTED,
         },
         CoreError::QuicP2p(ref _err) => ERR_QUIC_P2P, // FIXME: use proper error codes
         CoreError::UnsupportedSaltSizeForPwHash => ERR_UNSUPPORTED_SALT_SIZE_FOR_PW_HASH,
@@ -246,7 +247,7 @@ pub fn safe_nd_error_core(err: &SndError) -> i32 {
         SndError::InvalidOperation => ERR_INVALID_OPERATION,
         SndError::NetworkOther(_) => ERR_NETWORK_OTHER,
         SndError::InvalidOwnersSuccessor(_) => ERR_INVALID_OWNERS_SUCCESSOR,
-        SndError::InvalidPermissionsSuccessor(_) => ERR_INVALID_PERMISSIONS_SUCCESSOR,
+        SndError::OpNotCausallyReady => ERR_OP_NOT_CAUSALLY_READY,
         SndError::SigningKeyTypeMismatch => ERR_SIGN_KEYTYPE_MISMATCH,
         SndError::InvalidSignature => ERR_INVALID_SIGNATURE,
         SndError::LossOfPrecision => ERR_LOSS_OF_PRECISION,
@@ -257,6 +258,7 @@ pub fn safe_nd_error_core(err: &SndError) -> i32 {
         SndError::TransactionIdExists => ERR_TRANSACTION_ID_EXISTS,
         SndError::InsufficientBalance => ERR_INSUFFICIENT_BALANCE,
         SndError::ExceededSize => ERR_EXCEEDED_SIZE,
+        SndError::Unexpected(_) => ERR_UNEXPECTED,
     }
 }
 

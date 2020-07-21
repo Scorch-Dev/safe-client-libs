@@ -49,8 +49,8 @@ use safe_nd::{
     MDataEntryActions, MDataPermissionSet, MDataRequest, MDataSeqEntries, MDataSeqEntryActions,
     MDataSeqValue, MDataUnseqEntryActions, MDataValue, MDataValues, Message, MessageId, PublicId,
     PublicKey, Request, RequestType, Response, SData, SDataAction, SDataAddress, SDataEntries,
-    SDataEntry, SDataIndex, SDataOwner, SDataPrivPermissions, SDataPrivUserPermissions,
-    SDataPubPermissions, SDataPubUserPermissions, SDataRequest, SDataUser, SDataUserPermissions,
+    SDataEntry, SDataIndex, SDataPrivPermissions, SDataPrivPolicy,
+    SDataPubPermissions, SDataPubPolicy, SDataRequest, SDataUser, SDataPermissions,
     SeqMutableData, Transaction, UnseqMutableData, XorName,
 };
 use std::{
@@ -806,13 +806,16 @@ pub trait Client: Clone + Send + Sync {
         name: XorName,
         tag: u64,
         owner: PublicKey,
-        permissions: BTreeMap<PublicKey, SDataPrivUserPermissions>,
+        permissions: BTreeMap<PublicKey, SDataPrivPermissions>,
     ) -> Result<SDataAddress, CoreError> {
+
         trace!("Store Private Sequence Data {:?}", name);
-        let mut data = SData::new_priv(self.public_key().await, name, tag);
+        let pub_key = self.public_key().await;
+        let mut data = SData::new_priv(pub_key, name, tag);
         let address = *data.address();
-        let _ = data.set_priv_permissions(permissions)?;
-        let _ = data.set_owner(owner);
+        let perms_op = data.set_priv_policy(pub_key, permissions)?;
+        //let _ = data.apply_priv_policy_op(perms_op)?;
+
         send_mutation(self, Request::SData(SDataRequest::Store(data.clone()))).await?;
         // Store in local Sequence CRDT replica
         let _ = self
@@ -831,13 +834,15 @@ pub trait Client: Clone + Send + Sync {
         name: XorName,
         tag: u64,
         owner: PublicKey,
-        permissions: BTreeMap<SDataUser, SDataPubUserPermissions>,
+        permissions: BTreeMap<SDataUser, SDataPubPermissions>,
     ) -> Result<SDataAddress, CoreError> {
         trace!("Store Public Sequence Data {:?}", name);
-        let mut data = SData::new_pub(self.public_key().await, name, tag);
+        let pub_key = self.public_key().await;
+        let mut data = SData::new_pub(pub_key, name, tag);
         let address = *data.address();
-        let _ = data.set_pub_permissions(permissions)?;
-        let _ = data.set_owner(owner);
+        let perms_op = data.set_pub_policy(pub_key, permissions)?;
+        //let _ = data.apply_pub_policy_op(perms_op)?;
+
         send_mutation(self, Request::SData(SDataRequest::Store(data.clone()))).await?;
         // Store in local Sequence CRDT replica
         let _ = self
@@ -945,50 +950,50 @@ pub trait Client: Clone + Send + Sync {
         send_mutation(self, Request::SData(SDataRequest::Mutate(append_op))).await
     }
 
-    /// Get the set of Permissions of a Public Sequence.
-    async fn get_sdata_pub_permissions(
+    /// Get the policy of a Public Sequence.
+    async fn get_sdata_pub_policy(
         &self,
         address: SDataAddress,
-    ) -> Result<SDataPubPermissions, CoreError> {
+    ) -> Result<SDataPubPolicy, CoreError> {
         trace!(
-            "Get permissions from Public Sequence Data at {:?}",
+            "Get policy from Public Sequence Data at {:?}",
             address.name()
         );
 
         // TODO: perhaps we want to grab it directly from the network and update local replica
         let sdata = self.get_sdata(address).await?;
-        let perms = sdata
-            .pub_permissions(sdata.permissions_index() - 1)
+        let policy = sdata
+            .pub_policy(sdata.policy_index() - 1) // - 1?
             .map_err(CoreError::from)?;
 
-        Ok(perms.clone())
+        Ok(policy.clone())
     }
 
-    /// Get the set of Permissions of a Private Sequence.
-    async fn get_sdata_priv_permissions(
+    /// Get the policy of a Private Sequence.
+    async fn get_sdata_priv_policy(
         &self,
         address: SDataAddress,
-    ) -> Result<SDataPrivPermissions, CoreError> {
+    ) -> Result<SDataPrivPolicy, CoreError> {
         trace!(
-            "Get permissions from Private Sequence Data at {:?}",
+            "Get policy from Private Sequence Data at {:?}",
             address.name()
         );
 
         // TODO: perhaps we want to grab it directly from the network and update local replica
         let sdata = self.get_sdata(address).await?;
-        let perms = sdata
-            .priv_permissions(sdata.permissions_index() - 1)
+        let policy = sdata
+            .priv_policy(sdata.policy_index() - 1)
             .map_err(CoreError::from)?;
 
-        Ok(perms.clone())
+        Ok(policy.clone())
     }
 
     /// Get the set of Permissions for a specific user in a Sequence.
-    async fn get_sdata_user_permissions(
+    async fn get_sdata_permissions(
         &self,
         address: SDataAddress,
         user: SDataUser,
-    ) -> Result<SDataUserPermissions, CoreError> {
+    ) -> Result<SDataPermissions, CoreError> {
         trace!(
             "Get permissions for user {:?} from Sequence Data at {:?}",
             user,
@@ -998,31 +1003,35 @@ pub trait Client: Clone + Send + Sync {
         // TODO: perhaps we want to grab it directly from the network and update local replica
         let sdata = self.get_sdata(address).await?;
         let perms = sdata
-            .user_permissions(user, sdata.permissions_index() - 1)
+            .permissions(user, sdata.policy_index() - 1)
             .map_err(CoreError::from)?;
 
         Ok(perms)
     }
 
     /// Set permissions to Public Sequence Data
-    async fn sdata_set_pub_permissions(
+    async fn sdata_set_pub_policy(
         &self,
         address: SDataAddress,
-        permissions: BTreeMap<SDataUser, SDataPubUserPermissions>,
+        permissions: BTreeMap<SDataUser, SDataPubPermissions>,
     ) -> Result<(), CoreError> {
+
         // First we fetch it either from local CRDT replica or from the network if not found
         let mut sdata = self.get_sdata(address).await?;
+        let pub_key = self.public_id().await.public_key();
 
         // We do a permissions check just to make sure it won't fail when the operation
         // is broadcasted to the network, assuming our replica is in sync and up to date
         // with the permissions information compared with the replicas on the network.
         sdata.check_permission(
-            SDataAction::ManagePermissions,
-            self.public_id().await.public_key(),
+            SDataAction::Admin,
+            pub_key,
         )?;
 
         // We can now set the new permissions to the Sequence
-        let perms_op = sdata.set_pub_permissions(permissions)?;
+        let perms_op = sdata.set_pub_policy(pub_key, permissions)?;
+        //let _ = sdata.apply_pub_policy_op(perms_op)?;
+
 
         // Update the local Sequence CRDT replica
         let _ = self
@@ -1035,31 +1044,34 @@ pub trait Client: Clone + Send + Sync {
         // Finally we can send the mutation to the network's replicas
         send_mutation(
             self,
-            Request::SData(SDataRequest::MutatePubPermissions(perms_op)),
+            Request::SData(SDataRequest::MutatePubPolicy(perms_op)),
         )
         .await
     }
 
     /// Set permissions to Private Sequence Data
-    async fn sdata_set_priv_permissions(
+    async fn sdata_set_priv_policy(
         &self,
         address: SDataAddress,
-        permissions: BTreeMap<PublicKey, SDataPrivUserPermissions>,
+        permissions: BTreeMap<PublicKey, SDataPrivPermissions>,
     ) -> Result<(), CoreError> {
+        
         // First we fetch it either from local CRDT replica or from the network if not found
         let mut sdata = self.get_sdata(address).await?;
+        let pub_key = self.public_id().await.public_key();
 
         // We do a permissions check just to make sure it won't fail when the operation
         // is broadcasted to the network, assuming our replica is in sync and up to date
         // with the permissions information compared with the replicas on the network.
         // TODO: if it fails, try to sync-up perms with rmeote replicas and try once more
         sdata.check_permission(
-            SDataAction::ManagePermissions,
-            self.public_id().await.public_key(),
+            SDataAction::Admin,
+            pub_key
         )?;
 
         // We can now set the new permissions to the Sequence
-        let perms_op = sdata.set_priv_permissions(permissions)?;
+        let perms_op = sdata.set_priv_policy(pub_key, permissions)?;
+        //let _ = sdata.apply_priv_policy_op(perms_op)?;
 
         // Update the local Sequence CRDT replica
         let _ = self
@@ -1072,12 +1084,13 @@ pub trait Client: Clone + Send + Sync {
         // Finally we can send the mutation to the network's replicas
         send_mutation(
             self,
-            Request::SData(SDataRequest::MutatePrivPermissions(perms_op)),
+            Request::SData(SDataRequest::MutatePrivPolicy(perms_op)),
         )
         .await
     }
 
     /// Get the owner of a Sequence.
+    /*
     async fn get_sdata_owner(&self, address: SDataAddress) -> Result<SDataOwner, CoreError> {
         trace!("Get owner of the Sequence Data at {:?}", address.name());
 
@@ -1121,6 +1134,7 @@ pub trait Client: Clone + Send + Sync {
         // Finally we can send the mutation to the network's replicas
         send_mutation(self, Request::SData(SDataRequest::MutateOwner(owner_op))).await
     }
+    */
 
     /// Delete Private Sequence Data from the Network
     async fn delete_sdata(&self, address: SDataAddress) -> Result<(), CoreError> {
@@ -1600,7 +1614,7 @@ mod tests {
     };
     use safe_nd::{
         Coins, Error as SndError, MDataAction, MDataKind, PubImmutableData,
-        SDataPrivUserPermissions, UnpubImmutableData, XorName,
+        SDataPrivPermissions, UnpubImmutableData, XorName,
     };
     use std::str::FromStr;
 
@@ -2312,7 +2326,7 @@ mod tests {
         client.put_idata(idata).await?;
 
         let owner = client.public_key().await;
-        let perms = BTreeMap::<PublicKey, SDataPrivUserPermissions>::new();
+        let perms = BTreeMap::<PublicKey, SDataPrivPermissions>::new();
         let sdata_address = client.store_priv_sdata(name, tag, owner, perms).await?;
 
         let mdata = UnseqMutableData::new(name, tag, client.public_key().await);
@@ -2340,27 +2354,27 @@ mod tests {
         let owner = client.public_key().await;
 
         // store a Private Sequence
-        let mut perms = BTreeMap::<PublicKey, SDataPrivUserPermissions>::new();
-        let _ = perms.insert(owner, SDataPrivUserPermissions::new(true, true, true));
+        let mut perms = BTreeMap::<PublicKey, SDataPrivPermissions>::new();
+        let _ = perms.insert(owner, SDataPrivPermissions::new(true, true, true));
         let address = client.store_priv_sdata(name, tag, owner, perms).await?;
         let sdata = client.get_sdata(address).await?;
         assert!(sdata.is_priv());
         assert_eq!(*sdata.name(), name);
         assert_eq!(sdata.tag(), tag);
-        assert_eq!(sdata.permissions_index(), 1);
-        assert_eq!(sdata.owners_index(), 1);
+        assert_eq!(sdata.policy_index(), 1);
+        //assert_eq!(sdata.owners_index(), 1);
         assert_eq!(sdata.entries_index(), 0);
 
         // store a Public Sequence
-        let mut perms = BTreeMap::<SDataUser, SDataPubUserPermissions>::new();
-        let _ = perms.insert(SDataUser::Anyone, SDataPubUserPermissions::new(true, true));
+        let mut perms = BTreeMap::<SDataUser, SDataPubPermissions>::new();
+        let _ = perms.insert(SDataUser::Anyone, SDataPubPermissions::new(true, true));
         let address = client.store_pub_sdata(name, tag, owner, perms).await?;
         let sdata = client.get_sdata(address).await?;
         assert!(sdata.is_pub());
         assert_eq!(*sdata.name(), name);
         assert_eq!(sdata.tag(), tag);
-        assert_eq!(sdata.permissions_index(), 1);
-        assert_eq!(sdata.owners_index(), 1);
+        assert_eq!(sdata.policy_index(), 1);
+        //assert_eq!(sdata.owners_index(), 1);
         assert_eq!(sdata.entries_index(), 0);
 
         Ok(())
@@ -2373,34 +2387,34 @@ mod tests {
         let name = XorName(rand::random());
         let tag = 15000;
         let owner = client.public_key().await;
-        let mut perms = BTreeMap::<PublicKey, SDataPrivUserPermissions>::new();
-        let _ = perms.insert(owner, SDataPrivUserPermissions::new(true, true, true));
+        let mut perms = BTreeMap::<PublicKey, SDataPrivPermissions>::new();
+        let _ = perms.insert(owner, SDataPrivPermissions::new(true, true, true));
         let address = client.store_priv_sdata(name, tag, owner, perms).await?;
 
         let data = client.get_sdata(address).await?;
         assert_eq!(data.entries_index(), 0);
-        assert_eq!(data.owners_index(), 1);
-        assert_eq!(data.permissions_index(), 1);
+        //assert_eq!(data.owners_index(), 1);
+        assert_eq!(data.policy_index(), 1);
 
-        let priv_permissions = client.get_sdata_priv_permissions(address).await?;
-        let user_perms = priv_permissions
+        let priv_policy = client.get_sdata_priv_policy(address).await?;
+        let user_perms = priv_policy
             .permissions
             .get(&owner)
             .ok_or_else(|| CoreError::from("Unexpectedly failed to get user permissions"))?;
         assert!(user_perms.is_allowed(SDataAction::Read));
         assert!(user_perms.is_allowed(SDataAction::Append));
-        assert!(user_perms.is_allowed(SDataAction::ManagePermissions));
+        assert!(user_perms.is_allowed(SDataAction::Admin));
 
         match client
-            .get_sdata_user_permissions(address, SDataUser::Key(owner))
+            .get_sdata_permissions(address, SDataUser::Key(owner))
             .await?
         {
-            SDataUserPermissions::Priv(user_perms) => {
+            SDataPermissions::Priv(user_perms) => {
                 assert!(user_perms.is_allowed(SDataAction::Read));
                 assert!(user_perms.is_allowed(SDataAction::Append));
-                assert!(user_perms.is_allowed(SDataAction::ManagePermissions));
+                assert!(user_perms.is_allowed(SDataAction::Admin));
             }
-            SDataUserPermissions::Pub(_) => {
+            SDataPermissions::Pub(_) => {
                 return Err(CoreError::from(
                     "Unexpectedly obtained incorrect user permissions",
                 ))
@@ -2408,33 +2422,33 @@ mod tests {
         }
 
         let sim_client = gen_bls_keypair().public_key();
-        let mut perms2 = BTreeMap::<PublicKey, SDataPrivUserPermissions>::new();
+        let mut perms2 = BTreeMap::<PublicKey, SDataPrivPermissions>::new();
         let _ = perms2.insert(
             sim_client,
-            SDataPrivUserPermissions::new(false, true, false),
+            SDataPrivPermissions::new(false, true, false),
         );
-        client.sdata_set_priv_permissions(address, perms2).await?;
+        client.sdata_set_priv_policy(address, perms2).await?;
 
-        let priv_permissions = client.get_sdata_priv_permissions(address).await?;
-        let user_perms = priv_permissions
+        let priv_policy = client.get_sdata_priv_policy(address).await?;
+        let user_perms = priv_policy
             .permissions
             .get(&sim_client)
             .ok_or_else(|| CoreError::from("Unexpectedly failed to get user permissions"))?;
         assert!(!user_perms.is_allowed(SDataAction::Read));
         assert!(user_perms.is_allowed(SDataAction::Append));
-        assert!(!user_perms.is_allowed(SDataAction::ManagePermissions));
+        assert!(!user_perms.is_allowed(SDataAction::Admin));
 
         match client
-            .get_sdata_user_permissions(address, SDataUser::Key(sim_client))
+            .get_sdata_permissions(address, SDataUser::Key(sim_client))
             .await?
         {
-            SDataUserPermissions::Priv(user_perms) => {
+            SDataPermissions::Priv(user_perms) => {
                 assert!(!user_perms.is_allowed(SDataAction::Read));
                 assert!(user_perms.is_allowed(SDataAction::Append));
-                assert!(!user_perms.is_allowed(SDataAction::ManagePermissions));
+                assert!(!user_perms.is_allowed(SDataAction::Admin));
                 Ok(())
             }
-            SDataUserPermissions::Pub(_) => Err(CoreError::from(
+            SDataPermissions::Pub(_) => Err(CoreError::from(
                 "Unexpectedly obtained incorrect user permissions",
             )),
         }
@@ -2447,20 +2461,20 @@ mod tests {
         let name = XorName(rand::random());
         let tag = 15000;
         let owner = client.public_key().await;
-        let mut perms = BTreeMap::<SDataUser, SDataPubUserPermissions>::new();
+        let mut perms = BTreeMap::<SDataUser, SDataPubPermissions>::new();
         let _ = perms.insert(
             SDataUser::Key(owner),
-            SDataPubUserPermissions::new(None, true),
+            SDataPubPermissions::new(None, true),
         );
         let address = client.store_pub_sdata(name, tag, owner, perms).await?;
 
         let data = client.get_sdata(address).await?;
         assert_eq!(data.entries_index(), 0);
-        assert_eq!(data.owners_index(), 1);
-        assert_eq!(data.permissions_index(), 1);
+        //assert_eq!(data.owners_index(), 1);
+        assert_eq!(data.policy_index(), 1);
 
-        let pub_permissions = client.get_sdata_pub_permissions(address).await?;
-        let user_perms = pub_permissions
+        let pub_policy = client.get_sdata_pub_policy(address).await?;
+        let user_perms = pub_policy
             .permissions
             .get(&SDataUser::Key(owner))
             .ok_or_else(|| CoreError::from("Unexpectedly failed to get user permissions"))?;
@@ -2468,22 +2482,22 @@ mod tests {
         assert_eq!(None, user_perms.is_allowed(SDataAction::Append));
         assert_eq!(
             Some(true),
-            user_perms.is_allowed(SDataAction::ManagePermissions)
+            user_perms.is_allowed(SDataAction::Admin)
         );
 
         match client
-            .get_sdata_user_permissions(address, SDataUser::Key(owner))
+            .get_sdata_permissions(address, SDataUser::Key(owner))
             .await?
         {
-            SDataUserPermissions::Pub(user_perms) => {
+            SDataPermissions::Pub(user_perms) => {
                 assert_eq!(Some(true), user_perms.is_allowed(SDataAction::Read));
                 assert_eq!(None, user_perms.is_allowed(SDataAction::Append));
                 assert_eq!(
                     Some(true),
-                    user_perms.is_allowed(SDataAction::ManagePermissions)
+                    user_perms.is_allowed(SDataAction::Admin)
                 );
             }
-            SDataUserPermissions::Priv(_) => {
+            SDataPermissions::Priv(_) => {
                 return Err(CoreError::from(
                     "Unexpectedly obtained incorrect user permissions",
                 ))
@@ -2491,15 +2505,15 @@ mod tests {
         }
 
         let sim_client = gen_bls_keypair().public_key();
-        let mut perms2 = BTreeMap::<SDataUser, SDataPubUserPermissions>::new();
+        let mut perms2 = BTreeMap::<SDataUser, SDataPubPermissions>::new();
         let _ = perms2.insert(
             SDataUser::Key(sim_client),
-            SDataPubUserPermissions::new(false, false),
+            SDataPubPermissions::new(false, false),
         );
-        client.sdata_set_pub_permissions(address, perms2).await?;
+        client.sdata_set_pub_policy(address, perms2).await?;
 
-        let pub_permissions = client.get_sdata_pub_permissions(address).await?;
-        let user_perms = pub_permissions
+        let pub_policy = client.get_sdata_pub_policy(address).await?;
+        let user_perms = pub_policy
             .permissions
             .get(&SDataUser::Key(sim_client))
             .ok_or_else(|| CoreError::from("Unexpectedly failed to get user permissions"))?;
@@ -2507,23 +2521,23 @@ mod tests {
         assert_eq!(Some(false), user_perms.is_allowed(SDataAction::Append));
         assert_eq!(
             Some(false),
-            user_perms.is_allowed(SDataAction::ManagePermissions)
+            user_perms.is_allowed(SDataAction::Admin)
         );
 
         match client
-            .get_sdata_user_permissions(address, SDataUser::Key(sim_client))
+            .get_sdata_permissions(address, SDataUser::Key(sim_client))
             .await?
         {
-            SDataUserPermissions::Pub(user_perms) => {
+            SDataPermissions::Pub(user_perms) => {
                 assert_eq!(Some(true), user_perms.is_allowed(SDataAction::Read));
                 assert_eq!(Some(false), user_perms.is_allowed(SDataAction::Append));
                 assert_eq!(
                     Some(false),
-                    user_perms.is_allowed(SDataAction::ManagePermissions)
+                    user_perms.is_allowed(SDataAction::Admin)
                 );
                 Ok(())
             }
-            SDataUserPermissions::Priv(_) => Err(CoreError::from(
+            SDataPermissions::Priv(_) => Err(CoreError::from(
                 "Unexpectedly obtained incorrect user permissions",
             )),
         }
@@ -2536,10 +2550,10 @@ mod tests {
         let client = random_client()?;
 
         let owner = client.public_key().await;
-        let mut perms = BTreeMap::<SDataUser, SDataPubUserPermissions>::new();
+        let mut perms = BTreeMap::<SDataUser, SDataPubPermissions>::new();
         let _ = perms.insert(
             SDataUser::Key(owner),
-            SDataPubUserPermissions::new(true, true),
+            SDataPubPermissions::new(true, true),
         );
         let address = client.store_pub_sdata(name, tag, owner, perms).await?;
 
@@ -2571,8 +2585,8 @@ mod tests {
         let client = random_client()?;
 
         let owner = client.public_key().await;
-        let mut perms = BTreeMap::<PublicKey, SDataPrivUserPermissions>::new();
-        let _ = perms.insert(owner, SDataPrivUserPermissions::new(true, true, true));
+        let mut perms = BTreeMap::<PublicKey, SDataPrivPermissions>::new();
+        let _ = perms.insert(owner, SDataPrivPermissions::new(true, true, true));
         let address = client.store_priv_sdata(name, tag, owner, perms).await?;
 
         client.sdata_append(address, b"VALUE1".to_vec()).await?;
@@ -2580,9 +2594,10 @@ mod tests {
 
         let data = client.get_sdata(address).await?;
         assert_eq!(data.entries_index(), 2);
-        assert_eq!(data.owners_index(), 1);
-        assert_eq!(data.permissions_index(), 1);
+        //assert_eq!(data.owners_index(), 1);
+        assert_eq!(data.policy_index(), 1);
 
+        /*
         let current_owner = client.get_sdata_owner(address).await?;
         assert_eq!(owner, current_owner.public_key);
 
@@ -2591,6 +2606,7 @@ mod tests {
 
         let current_owner = client.get_sdata_owner(address).await?;
         assert_eq!(sim_client, current_owner.public_key);
+        */
 
         Ok(())
     }
@@ -2604,8 +2620,8 @@ mod tests {
         let owner = client.public_key().await;
 
         // store a Private Sequence
-        let mut perms = BTreeMap::<PublicKey, SDataPrivUserPermissions>::new();
-        let _ = perms.insert(owner, SDataPrivUserPermissions::new(true, true, true));
+        let mut perms = BTreeMap::<PublicKey, SDataPrivPermissions>::new();
+        let _ = perms.insert(owner, SDataPrivPermissions::new(true, true, true));
         let address = client.store_priv_sdata(name, tag, owner, perms).await?;
         let sdata = client.get_sdata(address).await?;
         assert!(sdata.is_priv());
@@ -2628,8 +2644,8 @@ mod tests {
         }
 
         // store a Public Sequence
-        let mut perms = BTreeMap::<SDataUser, SDataPubUserPermissions>::new();
-        let _ = perms.insert(SDataUser::Anyone, SDataPubUserPermissions::new(true, true));
+        let mut perms = BTreeMap::<SDataUser, SDataPubPermissions>::new();
+        let _ = perms.insert(SDataUser::Anyone, SDataPubPermissions::new(true, true));
         let address = client.store_pub_sdata(name, tag, owner, perms).await?;
         let sdata = client.get_sdata(address).await?;
         assert!(sdata.is_pub());

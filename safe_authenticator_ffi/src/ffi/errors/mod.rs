@@ -185,7 +185,7 @@ fn safe_nd_error_core(err: &SndError) -> i32 {
         SndError::InvalidOperation => ERR_INVALID_OPERATION,
         SndError::NetworkOther(_) => ERR_NETWORK_OTHER,
         SndError::InvalidOwnersSuccessor(_) => ERR_INVALID_OWNERS_SUCCESSOR,
-        SndError::InvalidPermissionsSuccessor(_) => ERR_INVALID_PERMISSIONS_SUCCESSOR,
+        SndError::OpNotCausallyReady => ERR_OP_NOT_CAUSALLY_READY,
         SndError::SigningKeyTypeMismatch => ERR_SIGN_KEYTYPE_MISMATCH,
         SndError::InvalidSignature => ERR_INVALID_SIGNATURE,
         SndError::LossOfPrecision => ERR_LOSS_OF_PRECISION,
@@ -196,6 +196,7 @@ fn safe_nd_error_core(err: &SndError) -> i32 {
         SndError::TransactionIdExists => ERR_TRANSACTION_ID_EXISTS,
         SndError::InsufficientBalance => ERR_INSUFFICIENT_BALANCE,
         SndError::ExceededSize => ERR_EXCEEDED_SIZE,
+        SndError::Unexpected(_) => ERR_UNEXPECTED,
     }
 }
 

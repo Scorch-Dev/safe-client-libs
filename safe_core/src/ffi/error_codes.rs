@@ -70,7 +70,7 @@ pub const ERR_UNEXPECTED: i32 = -2000;
 
 // Identity & permission errors.
 pub const ERR_INVALID_OWNERS_SUCCESSOR: i32 = -3001;
-pub const ERR_INVALID_PERMISSIONS_SUCCESSOR: i32 = -3002;
+pub const ERR_OP_NOT_CAUSALLY_READY: i32 = -3002;
 pub const ERR_SIGN_KEYTYPE_MISMATCH: i32 = -3003;
 pub const ERR_INVALID_SIGNATURE: i32 = -3004;
 
